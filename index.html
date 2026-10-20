@@ -26,7 +26,7 @@
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="hint">Double-click or F: full screen. S: simulated traffic on or off</div>
+<div id="hint">Double-click or F: full screen. S: simulated traffic. + / -: range</div>
 <script>
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
 const chart = document.createElement('canvas'), cc = chart.getContext('2d');
@@ -35,8 +35,9 @@ const BG = '#030b07', FF = '"Barlow Condensed","Arial Narrow",sans-serif';
 const GREEN = '#68d98b', AMB = '104,230,137', MILC = '#ff6a55';
 const PERIOD = matchMedia('(prefers-reduced-motion: reduce)').matches ? 12 : 6;
 
-// Delhi Indira Gandhi International (VIDP), zoomed to a 10 NM scope
-const LAT0 = 28.5562, LON0 = 77.1, RANGE = 10;
+// Delhi Indira Gandhi International (VIDP), initially shown at a 10 NM scope
+const LAT0 = 28.5562, LON0 = 77.1;
+let RANGE = 10;
 const KX = Math.cos(LAT0 * RAD);
 const proj = (lat, lon) => [(lon - LON0) * KX * 60 / RANGE, -(lat - LAT0) * 60 / RANGE];
 let W, H, D, U, CX, CY;
@@ -358,7 +359,21 @@ addEventListener('dblclick', toggleFS);
 addEventListener('keydown', e => {
   if (e.key === 'f' || e.key === 'F') toggleFS();
   if (e.key === 's' || e.key === 'S') simOn = !simOn;
+  if (['+', '=', 'Add'].includes(e.key)) adjustRange(1);
+  if (['-', '_', 'Subtract'].includes(e.key)) adjustRange(-1);
 });
+function adjustRange(delta) {
+  const next = Math.max(2, Math.min(40, RANGE + delta));
+  if (next === RANGE) return;
+  const scale = RANGE / next;
+  RANGE = next;
+  sim.forEach(a => {
+    a.x = a.e / RANGE; a.y = -a.n / RANGE;
+    if (a.p) { a.p.x *= scale; a.p.y *= scale; }
+    a.trail.forEach(p => { p.x *= scale; p.y *= scale; });
+  });
+  drawChart();
+}
 addEventListener('resize', resize);
 if (document.fonts && document.fonts.ready) document.fonts.ready.then(resize);
 resize(); wake(); requestAnimationFrame(frame);
