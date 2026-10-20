@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>VIDP Tactical Radar</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root { color-scheme: dark; --bg: #030b07; --hint: #80c99a; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  body { background: radial-gradient(ellipse at center, #0a1c10 0%, #030b07 78%); }
+  canvas { display: block; width: 100%; height: 100%; }
+  body.idle { cursor: none; }
+  #hint {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+    font: 400 15px "Barlow Condensed", "Arial Narrow", sans-serif;
+    letter-spacing: .04em; color: var(--hint);
+    opacity: 0; transition: opacity .6s; pointer-events: none;
+    background: rgba(3,11,7,.88); border: 1px solid rgba(91,220,132,.28);
+    padding: 5px 12px; white-space: nowrap; text-transform: uppercase;
+  }
+  body:not(.idle) #hint { opacity: .9; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">Double-click or F: full screen. S: simulated traffic on or off</div>
+<script>
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const chart = document.createElement('canvas'), cc = chart.getContext('2d');
+const TAU = Math.PI * 2, RAD = Math.PI / 180;
+const BG = '#030b07', FF = '"Barlow Condensed","Arial Narrow",sans-serif';
+const GREEN = '#68d98b', AMB = '104,230,137', MILC = '#ff6a55';
+const PERIOD = matchMedia('(prefers-reduced-motion: reduce)').matches ? 12 : 6;
+
+// Delhi Indira Gandhi International (VIDP), zoomed to a 10 NM scope
+const LAT0 = 28.5562, LON0 = 77.1, RANGE = 10;
+const KX = Math.cos(LAT0 * RAD);
+const proj = (lat, lon) => [(lon - LON0) * KX * 60 / RANGE, -(lat - LAT0) * 60 / RANGE];
+let W, H, D, U, CX, CY;
+const P = (x, y) => [CX + x * U, CY + y * U];
+const P2 = (lat, lon) => { const q = proj(lat, lon); return P(q[0], q[1]); };
+const L2 = (e, n) => [CX + e * U / RANGE, CY - n * U / RANGE];   // east/north NM from the airport
+const onScreen = (x, y) => x > 30 && x < W - 30 && y > 30 && y < H - 30;
+
+// Runway layout: true lengths, approximate positions (schematic)
+const RW = [
+  { a: '11L', b: '29R', off: .45, sh: -.05, h: 110, len: 2.39 },
+  { a: '11R', b: '29L', off: -.30, sh: 0, h: 110, len: 2.06 },
+  { a: '10', b: '28', off: -.95, sh: -.1, h: 100, len: 2.06 }
+];
+const vec = h => [Math.sin(h * RAD), Math.cos(h * RAD)];
+const lp = (off, sh, h) => { const u = vec(h), n = [-u[1], u[0]]; return [n[0] * off + u[0] * sh, n[1] * off + u[1] * sh]; };
+
+function tag(c, t, x, y, col, sz = 12, rot = 0) {
+  if (!t) return;
+  c.save(); c.translate(x, y); c.rotate(rot);
+  c.font = `600 ${sz}px ${FF}`;
+  const w = c.measureText(t).width + 6;
+  c.fillStyle = BG; c.fillRect(-w / 2, -sz / 2 - 1, w, sz + 2);
+  c.fillStyle = col; c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText(t, 0, 1); c.restore();
+}
+function airport(lat, lon, name, col) {
+  const [px, py] = P2(lat, lon);
+  if (!onScreen(px, py)) return;
+  cc.strokeStyle = col; cc.lineWidth = 1.6;
+  cc.beginPath(); cc.arc(px, py, 6, 0, TAU); cc.stroke();
+  cc.beginPath(); cc.moveTo(px - 4, py + 3); cc.lineTo(px + 4, py - 3); cc.stroke();
+  tag(cc, name, px, py + 17, col, 12);
+}
+const TOWNS = [['Gurugram', 28.4595, 77.0266], ['Noida', 28.5355, 77.391], ['Faridabad', 28.4089, 77.3178], ['Ghaziabad', 28.6692, 77.4538]];
+
+function drawChart() {
+  chart.width = W * D; chart.height = H * D;
+  cc.setTransform(D, 0, 0, D, 0, 0);
+  cc.fillStyle = BG; cc.fillRect(0, 0, W, H);
+
+  // lat/lon graticule every 2 minutes, labelled every 4
+  const dms = (v, h) => { const m = Math.round(v * 60); return `${Math.floor(m / 60)}°${String(m % 60).padStart(2, '0')}′${h}`; };
+  cc.strokeStyle = 'rgba(91,220,132,.12)'; cc.lineWidth = 1;
+  for (let m = 27 * 60; m <= 30 * 60; m += 2) {
+    const y = P2(m / 60, LON0)[1]; if (y < -5 || y > H + 5) continue;
+    cc.beginPath(); cc.moveTo(0, y); cc.lineTo(W, y); cc.stroke();
+    if (m % 4 === 0) tag(cc, dms(m / 60, 'N'), 36, y, 'rgba(126,205,148,.72)', 11);
+  }
+  for (let m = 76 * 60; m <= 78 * 60; m += 2) {
+    const x = P2(LAT0, m / 60)[0]; if (x < -5 || x > W + 5) continue;
+    cc.beginPath(); cc.moveTo(x, 0); cc.lineTo(x, H); cc.stroke();
+    if (m % 4 === 0) tag(cc, dms(m / 60, 'E'), x, 14, 'rgba(126,205,148,.72)', 11);
+  }
+
+  TOWNS.forEach(t => {
+    const [px, py] = P2(t[1], t[2]);
+    if (!onScreen(px, py)) return;
+    cc.strokeStyle = '#568966'; cc.lineWidth = 1.2;
+    cc.beginPath(); cc.arc(px, py, 3.5, 0, TAU); cc.stroke();
+    tag(cc, t[0], px, py + 14, '#78b88a', 11);
+  });
+  airport(28.5846, 77.2058, 'VIDD Safdarjung', GREEN);
+
+  // airport diagram: apron, terminal, taxiways, runways
+  const ap = [lp(-.52, -.55, 110), lp(-.52, .5, 110), lp(-.82, .5, 110), lp(-.82, -.55, 110)].map(q => L2(q[0], q[1]));
+  cc.beginPath(); ap.forEach((q, i) => i ? cc.lineTo(q[0], q[1]) : cc.moveTo(q[0], q[1])); cc.closePath();
+  cc.fillStyle = 'rgba(91,220,132,.1)'; cc.fill(); cc.strokeStyle = '#477454'; cc.lineWidth = 1; cc.stroke();
+  const tm = [lp(-.63, -.3, 110), lp(-.63, .3, 110), lp(-.71, .3, 110), lp(-.71, -.3, 110)].map(q => L2(q[0], q[1]));
+  cc.beginPath(); tm.forEach((q, i) => i ? cc.lineTo(q[0], q[1]) : cc.moveTo(q[0], q[1])); cc.closePath();
+  cc.fillStyle = '#6b9f78'; cc.fill();
+  const ac0 = L2(...lp(-.67, 0, 110)); tag(cc, 'Terminals', ac0[0], ac0[1] + 24, '#80c99a', 12);
+
+  RW.forEach(r => {
+    const u = vec(r.h), c = lp(r.off, r.sh, r.h), hl = r.len / 2;
+    const A = L2(c[0] - u[0] * hl, c[1] - u[1] * hl), B = L2(c[0] + u[0] * hl, c[1] + u[1] * hl);
+    const t = lp(r.off - .16, r.sh, r.h), TA = L2(t[0] - u[0] * hl * .9, t[1] - u[1] * hl * .9), TB = L2(t[0] + u[0] * hl * .9, t[1] + u[1] * hl * .9);
+    cc.setLineDash([5, 4]); cc.strokeStyle = '#477454'; cc.lineWidth = 1.5;
+    cc.beginPath(); cc.moveTo(TA[0], TA[1]); cc.lineTo(TB[0], TB[1]); cc.stroke();
+    cc.strokeStyle = '#a4d8b1'; cc.lineWidth = 6; cc.setLineDash([]);
+    cc.beginPath(); cc.moveTo(A[0], A[1]); cc.lineTo(B[0], B[1]); cc.stroke();
+    cc.strokeStyle = BG; cc.lineWidth = 1; cc.setLineDash([7, 6]);
+    cc.beginPath(); cc.moveTo(A[0], A[1]); cc.lineTo(B[0], B[1]); cc.stroke(); cc.setLineDash([]);
+    tag(cc, r.a, A[0] - u[0] * 20, A[1] + u[1] * 20, '#b2e5bd', 13);
+    tag(cc, r.b, B[0] + u[0] * 20, B[1] - u[1] * 20, '#b2e5bd', 13);
+  });
+  tag(cc, 'VIDP Indira Gandhi Intl', CX, CY + U * .1 + 38, '#b2e5bd', 14);
+
+  // dim everything outside the scope
+  cc.save(); cc.beginPath(); cc.rect(0, 0, W, H); cc.arc(CX, CY, U, 0, TAU, true);
+  cc.fillStyle = 'rgba(1,7,3,.58)'; cc.fill('evenodd'); cc.restore();
+
+  // range rings and bearing scale
+  cc.lineWidth = 1;
+  [.25, .5, .75, 1].forEach(f => {
+    cc.strokeStyle = `rgba(${AMB},${f === 1 ? .7 : .28})`; cc.setLineDash(f === 1 ? [] : [2, 5]);
+    cc.beginPath(); cc.arc(CX, CY, f * U, 0, TAU); cc.stroke(); cc.setLineDash([]);
+    const b = 2.62; tag(cc, f * RANGE + (f === 1 ? ' NM' : ''), CX + Math.sin(b) * f * U, CY - Math.cos(b) * f * U, `rgba(${AMB},.85)`, 11);
+  });
+  cc.strokeStyle = `rgba(${AMB},.55)`;
+  for (let d = 0; d < 360; d += 5) {
+    const t = d * RAD, l = d % 10 === 0 ? 10 : 5;
+    cc.beginPath();
+    cc.moveTo(CX + Math.sin(t) * U, CY - Math.cos(t) * U);
+    cc.lineTo(CX + Math.sin(t) * (U - l), CY - Math.cos(t) * (U - l));
+    cc.stroke();
+  }
+  for (let d = 0; d < 360; d += 30) {
+    const t = d * RAD;
+    tag(cc, String(d === 0 ? 360 : d).padStart(3, '0'), CX + Math.sin(t) * (U + 15), CY - Math.cos(t) * (U + 15), `rgba(${AMB},.9)`, 12);
+  }
+}
+
+function resize() {
+  D = Math.min(devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = W * D; cv.height = H * D;
+  U = Math.min(W, H) * .43; CX = W / 2; CY = H / 2;
+  drawChart();
+}
+
+// ---- simulated traffic: arrivals, departures, and transits (civil and military) ----
+const sim = []; let simOn = true;
+const MILC_ = ['IAF', 'HAWK', 'ARMY', 'TIGER'], CIV = ['AIC', 'IGO', 'SEJ', 'VTI', 'AXB', 'UAE', 'BAW', 'QTR', 'SIA', 'DLH', 'THY', 'ETD'];
+const rnd = (a, b) => a + Math.random() * (b - a);
+function spawnSim(kind, init) {
+  const rr = Math.random() < .5 ? 0 : 1;
+  const a = { sim: 1, trail: [], p: null, kind, mil: kind === 't' && Math.random() < .45 };
+  a.call = (a.mil ? MILC_[Math.random() * 4 | 0] : CIV[Math.random() * CIV.length | 0]) + (100 + Math.random() * 899 | 0);
+  if (kind === 'a') {
+    const R = RW[rr], u = vec(R.h), c = lp(R.off, R.sh, R.h);
+    a.T = [c[0] + u[0] * R.len / 2, c[1] + u[1] * R.len / 2];
+    const d = init ? rnd(1, 13) : 14;
+    a.e = a.T[0] + u[0] * d; a.n = a.T[1] + u[1] * d; a.h = (R.h + 180) % 360; a.gs = rnd(135, 165); a.vr = -700;
+  } else if (kind === 'd') {
+    const R = RW[1 - rr], u = vec(R.h), c = lp(R.off, R.sh, R.h);
+    const T = [c[0] + u[0] * R.len / 2, c[1] + u[1] * R.len / 2], d = init ? rnd(.5, 12) : .6;
+    a.e = T[0] - u[0] * d; a.n = T[1] - u[1] * d; a.h = (R.h + 180) % 360;
+    a.gs = Math.min(290, 150 + d * 14); a.alt = 400 + d * 600; a.vr = 1800; a.tgt = a.h + rnd(-60, 60);
+  } else {
+    const t = rnd(0, TAU), r = init ? Math.sqrt(Math.random()) * RANGE * .95 : RANGE * 1.3;
+    a.e = Math.sin(t) * r; a.n = Math.cos(t) * r;
+    const te = rnd(-.5, .5) * RANGE, tn = rnd(-.5, .5) * RANGE;
+    a.h = (Math.atan2(te - a.e, tn - a.n) / RAD + 360) % 360; a.vr = 0;
+    a.gs = a.mil ? rnd(320, 460) : rnd(230, 420); a.alt = a.mil ? rnd(2000, 28000) : rnd(8000, 39000);
+  }
+  return a;
+}
+['a', 'a', 'a', 'a', 'd', 'd', 'd', 't', 't', 't', 't', 't'].forEach(k => sim.push(spawnSim(k, true)));
+
+function stepSim(a, i, dt) {
+  const s = a.gs * dt / 3600, r = a.h * RAD;
+  a.e += Math.sin(r) * s; a.n += Math.cos(r) * s;
+  if (a.kind === 'a') {
+    const dd = Math.hypot(a.e - a.T[0], a.n - a.T[1]);
+    a.alt = 50 + dd * 320;
+    if (dd < .15) { sim[i] = spawnSim('a', false); return; }
+  } else if (a.kind === 'd') {
+    a.alt = Math.min(36000, a.alt + a.vr * dt / 60); a.gs = Math.min(290, a.gs + dt * 1.5);
+    if (Math.hypot(a.e, a.n) > 4) {
+      const dh = ((a.tgt - a.h + 540) % 360) - 180;
+      a.h = (a.h + Math.max(-3 * dt, Math.min(3 * dt, dh)) + 360) % 360;
+    }
+  }
+  if (Math.hypot(a.e, a.n) > RANGE * 1.4) { sim[i] = spawnSim(a.kind, false); return; }
+  a.x = a.e / RANGE; a.y = -a.n / RANGE; a.track = a.h;
+}
+
+let sweep = 0, last = performance.now();
+function frame(now) {
+  const dt = Math.min(.1, (now - last) / 1000); last = now;
+  const prev = sweep; sweep = (sweep + dt * TAU / PERIOD) % TAU;
+
+  sim.forEach((a, i) => stepSim(a, i, dt));
+  const all = simOn ? sim : [];
+  all.forEach(a => {
+    if (a.x === undefined || Math.hypot(a.x, a.y) >= 1) return;
+    const b = (Math.atan2(a.x, -a.y) + TAU) % TAU;
+    const hit = prev <= sweep ? (b > prev && b <= sweep) : (b > prev || b <= sweep);
+    if (hit) {
+      if (a.p) { a.trail.unshift({ x: a.p.x, y: a.p.y }); if (a.trail.length > 5) a.trail.pop(); }
+      a.p = { x: a.x, y: a.y, t: now, h: a.track * RAD, alt: a.alt, vr: a.vr, gs: Math.round(a.gs), mil: a.mil };
+    }
+  });
+
+  ctx.setTransform(D, 0, 0, D, 0, 0);
+  ctx.drawImage(chart, 0, 0, W, H);
+
+  const ang = sweep - Math.PI / 2, TR = 1.1;
+  if (ctx.createConicGradient) {
+    const f = TR / TAU, gr = ctx.createConicGradient(ang - TR, CX, CY);
+    gr.addColorStop(0, `rgba(${AMB},0)`); gr.addColorStop(f, `rgba(${AMB},.3)`);
+    gr.addColorStop(Math.min(f + .0005, 1), `rgba(${AMB},0)`); gr.addColorStop(1, `rgba(${AMB},0)`);
+    ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(CX, CY, U, 0, TAU); ctx.fill();
+  }
+  ctx.save();
+  ctx.shadowColor = `rgba(${AMB},.9)`; ctx.shadowBlur = 10;
+  ctx.strokeStyle = `rgba(${AMB},.95)`; ctx.lineWidth = 1.8;
+  ctx.beginPath(); ctx.moveTo(CX, CY); ctx.lineTo(CX + Math.cos(ang) * U, CY + Math.sin(ang) * U); ctx.stroke();
+  ctx.restore();
+
+  let tracks = 0;
+  ctx.lineJoin = 'round';
+  all.forEach(a => {
+    const p = a.p; if (!p) return;
+    const age = (now - p.t) / 1000, fade = 1 - age / (PERIOD * 1.08);
+    if (fade <= 0) { a.p = null; return; }
+    tracks++;
+    const al = Math.pow(fade, 1.3), bx = CX + p.x * U, by = CY + p.y * U;
+    const col = p.mil ? MILC : '#8cffaa';
+    ctx.fillStyle = col; ctx.strokeStyle = col;
+    a.trail.forEach((q, k) => { ctx.globalAlpha = al * .6 * (1 - k / 6); ctx.fillRect(CX + q.x * U - 1.5, CY + q.y * U - 1.5, 3, 3); });
+    ctx.globalAlpha = al;
+    if (p.mil) { ctx.beginPath(); ctx.moveTo(bx, by - 5); ctx.lineTo(bx + 5, by); ctx.lineTo(bx, by + 5); ctx.lineTo(bx - 5, by); ctx.closePath(); ctx.fill(); }
+    else ctx.fillRect(bx - 3, by - 3, 6, 6);
+    ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + Math.sin(p.h) * 20, by - Math.cos(p.h) * 20); ctx.stroke();
+    if (age < .7) { ctx.globalAlpha = (1 - age / .7) * .8; ctx.beginPath(); ctx.arc(bx, by, 6 + age * 26, 0, TAU); ctx.stroke(); }
+    ctx.globalAlpha = al;
+    const sx = bx > W - 140 ? -1 : 1;
+    ctx.lineWidth = 1; ctx.strokeStyle = p.mil ? 'rgba(255,106,85,.8)' : `rgba(${AMB},.8)`;
+    ctx.beginPath(); ctx.moveTo(bx + sx * 5, by - 5); ctx.lineTo(bx + sx * 22, by - 22); ctx.stroke();
+    ctx.textAlign = sx > 0 ? 'left' : 'right'; ctx.textBaseline = 'middle';
+    const h = Math.round(p.alt / 100), fl = h >= 180 ? 'FL' + h : 'A' + String(h).padStart(3, '0');
+    const l2 = `${fl} ${p.vr > 300 ? '↑' : p.vr < -300 ? '↓' : ''} ${p.gs}${p.mil ? ' MIL' : ''}`;
+    ctx.lineWidth = 3; ctx.strokeStyle = BG;
+    ctx.font = `600 14px ${FF}`; ctx.strokeText(a.call, bx + sx * 26, by - 27); ctx.fillStyle = p.mil ? '#ffb5a9' : '#c7ffd2'; ctx.fillText(a.call, bx + sx * 26, by - 27);
+    ctx.font = `400 13px ${FF}`; ctx.strokeText(l2, bx + sx * 26, by - 13); ctx.fillStyle = col; ctx.fillText(l2, bx + sx * 26, by - 13);
+    ctx.globalAlpha = 1;
+  });
+
+  // legend (drifts a few pixels to avoid burn-in)
+  const dx = Math.sin(now / 9000) * 6, dy = Math.cos(now / 11000) * 6;
+  const z = new Date().toISOString().slice(11, 19) + 'Z';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.font = `600 20px ${FF}`; ctx.fillStyle = '#b2e5bd'; ctx.fillText('VIDP  TACTICAL RADAR', 56 + dx, 60 + dy);
+  ctx.font = `400 15px ${FF}`; ctx.fillStyle = '#80c99a';
+  ctx.fillText('SURVEILLANCE SIMULATION  //  LIVE DATA DISABLED', 56 + dx, 82 + dy);
+  ctx.fillStyle = `rgb(${AMB})`; ctx.fillText(`${z}   ${tracks} tracks   range ${RANGE} NM`, 56 + dx, 102 + dy);
+  ctx.fillStyle = MILC; ctx.fillText('DIAMOND: MIL  //  SQUARE: CIV  //  RUNWAY DIAGRAM APPROXIMATE', 56 + dx, 122 + dy);
+
+  // Subtle CRT scanlines and a phosphor vignette finish the instrument-panel look.
+  ctx.save();
+  ctx.globalAlpha = .11; ctx.fillStyle = '#000';
+  for (let y = 0; y < H; y += 4) ctx.fillRect(0, y, W, 1);
+  const vignette = ctx.createRadialGradient(CX, CY, U * .45, CX, CY, Math.max(W, H) * .72);
+  vignette.addColorStop(0, 'rgba(0,0,0,0)'); vignette.addColorStop(1, 'rgba(0,0,0,.62)');
+  ctx.globalAlpha = 1; ctx.fillStyle = vignette; ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+
+  requestAnimationFrame(frame);
+}
+
+// screensaver behaviour
+let idleT, wl;
+function wake() { document.body.classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => document.body.classList.add('idle'), 2500); }
+['mousemove', 'pointerdown', 'keydown', 'touchstart'].forEach(e => addEventListener(e, wake, { passive: true }));
+async function toggleFS() {
+  try {
+    if (!document.fullscreenElement) {
+      await document.documentElement.requestFullscreen();
+      try { wl = await navigator.wakeLock.request('screen'); } catch (e) {}
+    } else { await document.exitFullscreen(); if (wl) wl.release(); }
+  } catch (e) {}
+}
+addEventListener('dblclick', toggleFS);
+addEventListener('keydown', e => {
+  if (e.key === 'f' || e.key === 'F') toggleFS();
+  if (e.key === 's' || e.key === 'S') simOn = !simOn;
+});
+addEventListener('resize', resize);
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(resize);
+resize(); wake(); requestAnimationFrame(frame);
+</script>
+</body>
+</html>
